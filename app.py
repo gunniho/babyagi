@@ -17,12 +17,6 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 assert OPENAI_API_KEY, "OPENAI_API_KEY environment variable is missing from .env from .env"
 
-# Use GPT-3 model
-USE_GPT4 = False
-if USE_GPT4:
-    print("\033[91m\033[1m" +
-          "\n*****USING GPT-4. POTENTIALLY EXPENSIVE. MONITOR YOUR COSTS*****"+"\033[0m\033[0m")
-
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
 assert PINECONE_API_KEY, "PINECONE_API_KEY environment variable is missing from .env"
 
@@ -70,40 +64,49 @@ def get_ada_embedding(text):
     return openai.Embedding.create(input=[text], model="text-embedding-ada-002")["data"][0]["embedding"]
 
 
-# Create a toggle to set gpt4 true or false
-use_gpt4 = st.sidebar.checkbox('Use GPT-4', value=False)
+# Dropdown to pick between two gpt models:
+pick_model = st.sidebar.selectbox(
+    'Pick a model',
+    ('gpt-3.5-turbo', 'gpt-4')
+)
+
+# Dropdown to pick between game systems:
+pick_system = st.sidebar.selectbox(
+    'Pick a system',
+    ('Call of Cthulhu', 'Dungeons & Dragons', 'Pathfinder')
+)
+# Set the objective based on the system:
+OBJECTIVE = f"Create a character for {pick_system}"
 
 
-def openai_call(prompt: str, use_gpt4: bool = True, temperature: float = 0.5, max_tokens: int = 100):
-    if not use_gpt4:
-        # Call GPT-3 DaVinci model
-        response = openai.Completion.create(
-            engine='text-davinci-003',
-            prompt=prompt,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            top_p=1,
-            frequency_penalty=0,
-            presence_penalty=0
-        )
-        return response.choices[0].text.strip()
-    else:
-        # Call GPT-4 chat model
-        messages = [{"role": "user", "content": prompt}]
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            n=1,
-            stop=None,
-        )
-        return response.choices[0].message.content.strip()
+# Optional user input for the first task:
+character_preferences = st.sidebar.text_input(
+    'Enter your first task',
+    'Describe your character'
+)
+
+
+YOUR_FIRST_TASK = f"Create a character backstory based on the description: {character_preferences}"
+
+
+# The main function that calls GPT
+def openai_call(prompt: str, temperature: float = 0.5, max_tokens: int = 100):
+    # Call GPT-4 chat model
+    messages = [{"role": "user", "content": prompt}]
+    response = openai.ChatCompletion.create(
+        model=pick_model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        n=1,
+        stop=None,
+    )
+    return response.choices[0].message.content.strip()
 
 
 def task_creation_agent(objective: str, result: Dict, task_description: str, task_list: List[str], gpt_version: str = 'gpt-3'):
     prompt = f"You are an task creation AI that uses the result of an execution agent to create new tasks with the following objective: {objective}, The last completed task has the result: {result}. This result was based on this task description: {task_description}. These are incomplete tasks: {', '.join(task_list)}. Based on the result, create new tasks to be completed by the AI system that do not overlap with incomplete tasks. Return the tasks as an array."
-    response = openai_call(prompt, USE_GPT4)
+    response = openai_call(prompt)
     new_tasks = response.split('\n')
     return [{"task_name": task_name} for task_name in new_tasks]
 
@@ -116,7 +119,7 @@ def prioritization_agent(this_task_id: int, gpt_version: str = 'gpt-3'):
     #. First task
     #. Second task
     Start the task list with number {next_task_id}."""
-    response = openai_call(prompt, USE_GPT4)
+    response = openai_call(prompt)
     new_tasks = response.split('\n')
     task_list = deque()
     for task_string in new_tasks:
@@ -133,7 +136,7 @@ def execution_agent(objective: str, task: str, gpt_version: str = 'gpt-3') -> st
     # print("\n*******RELEVANT CONTEXT******\n")
     # print(context)
     prompt = f"You are an AI who performs one task based on the following objective: {objective}.\nTake into account these previously completed tasks: {context}\nYour task: {task}\nResponse:"
-    return openai_call(prompt, USE_GPT4, 0.7, 2000)
+    return openai_call(prompt, 0.7, 2000)
 
 
 def context_agent(query: str, index: str, n: int):
@@ -148,14 +151,7 @@ def context_agent(query: str, index: str, n: int):
     return [(str(item.metadata['task'])) for item in sorted_results]
 
 
-# Print OBJECTIVE
-st.write("# OBJECTIVE")
-# Set the objective as a user text input:
-OBJECTIVE = st.text_input("Set the objective", value="")
-
-
 # Wrap the main loop in a function
-
 st.sidebar.markdown("## Task List")
 
 # Define task_id_counter outside the run_main_loop function
@@ -167,7 +163,6 @@ def run_main_loop():
     first_task = {
         "task_id": 1,
         "task_name": st.sidebar.text_input("Add the first task", value="")
-
     }
 
     add_task(first_task)
@@ -182,13 +177,12 @@ def run_main_loop():
 
         # Step 1: Pull the first task
         task = task_list.popleft()
-        st.markdown("### Task:")
-        st.write(f"{task['task_id']}: {task['task_name']}")
+        st.write(f"## Task {task['task_id']}: {task['task_name']}")
 
         # Send to execution function to complete the task based on the context
         result = execution_agent(OBJECTIVE, task["task_name"])
         this_task_id = int(task["task_id"])
-        st.markdown("### Task Result:")
+        st.write("### Task Result:")
         st.write(result)
 
         # Step 2: Enrich result and store in Pinecone
@@ -200,7 +194,7 @@ def run_main_loop():
 
         # Step 3: Create new tasks and reprioritize task list
         new_tasks = task_creation_agent(OBJECTIVE, enriched_result, task["task_name"], [
-                                        t["task_name"] for t in task_list])
+            t["task_name"] for t in task_list])
 
         for new_task in new_tasks:
             task_id_counter += 1
@@ -213,5 +207,5 @@ def run_main_loop():
 
 
 # Add a button to trigger the main loop
-if st.button("Run Task Manager"):
+if st.button("Create a Character"):
     run_main_loop()
