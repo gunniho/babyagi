@@ -8,6 +8,7 @@ from collections import deque
 from typing import Dict, List
 from dotenv import load_dotenv
 import os
+import streamlit as st
 
 # Set Variables
 load_dotenv()
@@ -39,9 +40,6 @@ assert OBJECTIVE, "OBJECTIVE environment variable is missing from .env"
 YOUR_FIRST_TASK = os.getenv("FIRST_TASK", "")
 assert YOUR_FIRST_TASK, "FIRST_TASK environment variable is missing from .env"
 
-# Print OBJECTIVE
-print("\033[96m\033[1m"+"\n*****OBJECTIVE*****\n"+"\033[0m\033[0m")
-print(OBJECTIVE)
 
 # Configure OpenAI and Pinecone
 openai.api_key = OPENAI_API_KEY
@@ -72,7 +70,11 @@ def get_ada_embedding(text):
     return openai.Embedding.create(input=[text], model="text-embedding-ada-002")["data"][0]["embedding"]
 
 
-def openai_call(prompt: str, use_gpt4: bool = False, temperature: float = 0.5, max_tokens: int = 100):
+# Create a toggle to set gpt4 true or false
+use_gpt4 = st.sidebar.checkbox('Use GPT-4', value=False)
+
+
+def openai_call(prompt: str, use_gpt4: bool = True, temperature: float = 0.5, max_tokens: int = 100):
     if not use_gpt4:
         # Call GPT-3 DaVinci model
         response = openai.Completion.create(
@@ -146,50 +148,70 @@ def context_agent(query: str, index: str, n: int):
     return [(str(item.metadata['task'])) for item in sorted_results]
 
 
-# Add the first task
-first_task = {
-    "task_id": 1,
-    "task_name": YOUR_FIRST_TASK
-}
+# Print OBJECTIVE
+st.write("# OBJECTIVE")
+# Set the objective as a user text input:
+OBJECTIVE = st.text_input("Set the objective", value="")
 
-add_task(first_task)
-# Main loop
+
+# Wrap the main loop in a function
+
+st.sidebar.markdown("## Task List")
+
+# Define task_id_counter outside the run_main_loop function
 task_id_counter = 1
-while True:
-    if task_list:
-        # Print the task list
-        print("\033[95m\033[1m"+"\n*****TASK LIST*****\n"+"\033[0m\033[0m")
+
+
+def run_main_loop():
+    # Add the first task as a text input for the user
+    first_task = {
+        "task_id": 1,
+        "task_name": st.sidebar.text_input("Add the first task", value="")
+
+    }
+
+    add_task(first_task)
+    global task_id_counter
+
+    while task_list:
+
+        # Display the task list in the sidebar
+
         for t in task_list:
-            print(str(t['task_id'])+": "+t['task_name'])
+            st.sidebar.write(f"{t['task_id']}: {t['task_name']}")
 
         # Step 1: Pull the first task
         task = task_list.popleft()
-        print("\033[92m\033[1m"+"\n*****NEXT TASK*****\n"+"\033[0m\033[0m")
-        print(str(task['task_id'])+": "+task['task_name'])
+        st.markdown("### Task:")
+        st.write(f"{task['task_id']}: {task['task_name']}")
 
         # Send to execution function to complete the task based on the context
         result = execution_agent(OBJECTIVE, task["task_name"])
         this_task_id = int(task["task_id"])
-        print("\033[93m\033[1m"+"\n*****TASK RESULT*****\n"+"\033[0m\033[0m")
-        print(result)
+        st.markdown("### Task Result:")
+        st.write(result)
 
         # Step 2: Enrich result and store in Pinecone
-        # This is where you should enrich the result if needed
         enriched_result = {'data': result}
         result_id = f"result_{task['task_id']}"
-        # extract the actual result from the dictionary
         vector = enriched_result['data']
         index.upsert([(result_id, get_ada_embedding(vector), {
                      "task": task['task_name'], "result":result})])
 
-    # Step 3: Create new tasks and reprioritize task list
-    new_tasks = task_creation_agent(OBJECTIVE, enriched_result, task["task_name"], [
-                                    t["task_name"] for t in task_list])
+        # Step 3: Create new tasks and reprioritize task list
+        new_tasks = task_creation_agent(OBJECTIVE, enriched_result, task["task_name"], [
+                                        t["task_name"] for t in task_list])
 
-    for new_task in new_tasks:
-        task_id_counter += 1
-        new_task.update({"task_id": task_id_counter})
-        add_task(new_task)
-    prioritization_agent(this_task_id)
+        for new_task in new_tasks:
+            task_id_counter += 1
+            new_task.update({"task_id": task_id_counter})
+            add_task(new_task)
+        prioritization_agent(this_task_id)
 
-time.sleep(1)  # Sleep before checking the task list again
+        # Clear the sidebar to update it with the new task list
+        st.sidebar.empty()
+
+
+# Add a button to trigger the main loop
+if st.button("Run Task Manager"):
+    run_main_loop()
